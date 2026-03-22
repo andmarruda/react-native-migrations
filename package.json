@@ -4,16 +4,24 @@
   "description": "Laravel-style SQLite migrations for React Native with pre-destructive data migration hooks.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "rn-sqlite-migrations": "./bin/rn-sqlite-migrations.cjs"
+  },
   "files": [
+    "bin",
     "dist",
     "src",
     "README.md",
-    "docs"
+    "docs",
+    "templates"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "npm run build && node --test test/**/*.test.cjs"
+    "test": "npm run build && node --test test/**/*.test.cjs",
+    "migrations:create": "node ./bin/rn-sqlite-migrations.cjs create",
+    "migrations:validate": "node ./bin/rn-sqlite-migrations.cjs validate",
+    "migrations:manifest": "node ./bin/rn-sqlite-migrations.cjs manifest"
   },
   "keywords": [
     "react-native",
