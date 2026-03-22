@@ -171,6 +171,26 @@ Additional English documentation lives in:
 
 - `docs/architecture.md`
 - `docs/improvements.md`
+- `docs/implementation-tasks.md`
+- `docs/quickstart.md`
+
+## CLI
+
+The package now includes a local maintenance CLI:
+
+```bash
+rn-sqlite-migrations help
+rn-sqlite-migrations create add_users --dir src/database/migrations
+rn-sqlite-migrations validate --dir src/database/migrations
+rn-sqlite-migrations manifest --dir src/database/migrations --out src/database/migrations/manifest.generated.json
+```
+
+## Examples
+
+Consumer examples live in:
+
+- `examples/basic-usage.ts`
+- `examples/logger.ts`
 
 ## Local Testing
 
