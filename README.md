@@ -1,24 +1,35 @@
 # react-native-sqlite-migrations
 
-Lib de migrations para React Native com SQLite, inspirada no fluxo do Laravel:
+Laravel-style SQLite migrations for React Native, with support for safe data migration before destructive schema changes.
 
-- migrations ordenadas por nome/timestamp
-- tabela de controle com `batch`
-- `up` e `down`
-- hook semantico para migracao de dados antes de SQL destrutivo
-- SQLs mantidos fora da lib, em uma pasta apontada pelo app
+This package is designed to keep your app focused on business rules instead of migration orchestration.
 
-## Ideia
+## Why This Package
 
-O app continua dono do banco e dos arquivos SQL, mas deixa a orquestracao de migrations com a lib.
+React Native apps that work offline usually keep important user data locally. That makes schema changes more sensitive than in a typical web app.
 
-Isso ajuda quando a estrutura muda e voce precisa:
+This package helps you:
 
-1. mover dados para uma nova tabela ou coluna
-2. validar / normalizar dados existentes
-3. so depois remover colunas, dropar tabelas ou recriar estruturas
+- keep SQL files outside the library, inside your app
+- run migrations in order using timestamp-based names
+- track applied migrations with Laravel-like `batch` semantics
+- move or transform data before dropping tables or replacing structures
+- keep the SQLite driver adapter small and explicit
+- verify migration integrity with stored SQL checksums
+- inspect health issues before running risky migrations or rollbacks
 
-## Estrutura sugerida no app
+## Why It Is Easy to Adopt
+
+The package is intentionally small to integrate:
+
+1. keep your SQL files in a folder such as `src/database/migrations`
+2. provide a tiny SQLite adapter with `execute`, `query`, and `withTransaction`
+3. point the library to your SQL directory through `readSqlFile`
+4. run `await runner.migrate()` during database boot
+
+That means you do not need to move your SQL into the library or let the library own your database driver.
+
+## Suggested App Structure
 
 ```text
 src/
@@ -30,7 +41,7 @@ src/
       202603210002_split_full_name.down.sql
 ```
 
-## API
+## Quick Example
 
 ```ts
 import { defineMigrations, MigrationRunner } from "react-native-sqlite-migrations";
@@ -87,10 +98,10 @@ const runner = new MigrationRunner({
 await runner.migrate();
 ```
 
-## Contrato do executor
+## SQLite Adapter Contract
 
-A lib nao acopla em `expo-sqlite`, `react-native-quick-sqlite` ou outro driver especifico.
-O app fornece um adaptador com este formato:
+The package does not force `expo-sqlite`, `react-native-quick-sqlite`, or any other specific driver.
+Your app only needs to provide this adapter shape:
 
 ```ts
 type SqliteExecutor = {
@@ -100,51 +111,61 @@ type SqliteExecutor = {
 };
 ```
 
-## Fluxo de migracao
+Official adapter helpers are now available for:
 
-Ao chamar `migrate()` a lib:
+- `createExpoSqliteExecutor`
+- `createQuickSqliteExecutor`
 
-1. cria a tabela de controle se nao existir
-2. descobre migrations pendentes
-3. abre uma transacao por migration
-4. executa `beforeDestructive`
-5. executa `beforeUp`
-6. carrega o arquivo `.up.sql`
-7. roda os statements SQL em sequencia
-8. registra a migration com `batch`
+## Migration Flow
 
-Ao chamar `rollbackLastBatch()` a lib:
+When you call `migrate()`, the library:
 
-1. pega o ultimo `batch`
-2. executa as migrations em ordem reversa
-3. roda `beforeDown`, `down.sql` e `afterDown`
-4. remove o registro da tabela de controle
+1. creates the migration repository table if needed
+2. discovers pending migrations
+3. opens one transaction per migration
+4. runs `beforeDestructive`
+5. runs `beforeUp`
+6. loads the `.up.sql` file
+7. executes SQL statements sequentially
+8. records the migration with a `batch`
 
-## Quando usar `beforeDestructive`
+When you call `rollbackLastBatch()`, the library:
 
-Use `beforeDestructive` quando voce precisa migrar dados antes de uma mudanca destrutiva. Exemplo:
+1. finds the latest `batch`
+2. runs migrations in reverse order
+3. runs `beforeDown`, `down.sql`, and `afterDown`
+4. removes migration records from the repository table
 
-- copiar dados de `full_name` para `first_name` e `last_name`
-- mover registros de uma tabela antiga para uma nova
-- consolidar enums, status ou formatos antigos
-- criar tabela temporaria antes de recriar uma estrutura
+## When to Use `beforeDestructive`
 
-Depois disso, o `.up.sql` pode focar na mudanca estrutural final.
+Use `beforeDestructive` when data must be preserved before a destructive structural change.
 
-Se quiser, `beforeUp` continua disponivel como hook generico antes do SQL principal.
+Examples:
 
-## Exemplo de loader
+- move data from an old table into a new one
+- split a legacy column into multiple new columns
+- normalize old values before a table rebuild
+- create temporary storage before recreating a table
 
-Em React Native, acesso a arquivos nem sempre e dinamico em runtime. Por isso a lib recebe `readSqlFile` em vez de assumir `fs`.
+After that, the `.up.sql` file can focus on the final schema change itself.
 
-Isso deixa voce livre para:
+## Loading SQL Files
 
-- usar `require`
-- usar assets empacotados
-- usar um manifest gerado no build
-- buscar SQL de um bundle local
+React Native often cannot access arbitrary local files dynamically at runtime. That is why the package receives `readSqlFile` instead of using `fs` directly.
 
-Exemplo conceitual:
+This makes it easy to use:
+
+- `require`
+- bundled assets
+- a generated manifest
+- any custom local asset loader
+
+Helper loaders are also exported:
+
+- `createStaticSqlLoader`
+- `createAssetSqlLoader`
+
+Conceptual example:
 
 ```ts
 const sqlFiles = {
@@ -156,27 +177,9 @@ async function loadSqlFromBundle(path: string) {
 }
 ```
 
-## Proximos passos
-
-Boas evolucoes para essa base:
-
-- criar helpers prontos para `expo-sqlite`
-- adicionar checksum dos arquivos SQL
-- gerar manifest automatico da pasta de migrations
-- expor comando CLI para validar ordem e nomes
-
-## Internal Docs
-
-Additional English documentation lives in:
-
-- `docs/architecture.md`
-- `docs/improvements.md`
-- `docs/implementation-tasks.md`
-- `docs/quickstart.md`
-
 ## CLI
 
-The package now includes a local maintenance CLI:
+The package includes a CLI for common migration maintenance tasks:
 
 ```bash
 rn-sqlite-migrations help
@@ -185,12 +188,98 @@ rn-sqlite-migrations validate --dir src/database/migrations
 rn-sqlite-migrations manifest --dir src/database/migrations --out src/database/migrations/manifest.generated.json
 ```
 
+## Can This Work With `npx`?
+
+Yes.
+
+Because the package exposes a `bin` command, it can be used with `npx`.
+
+If the package is already installed in your project:
+
+```bash
+npx rn-sqlite-migrations create add_users --dir src/database/migrations
+```
+
+If the package is published and you want to run it without installing first:
+
+```bash
+npx --package react-native-sqlite-migrations rn-sqlite-migrations create add_users --dir src/database/migrations
+```
+
+That means it is absolutely possible to generate migrations automatically with an `npx` command.
+
+## Useful `npx` Commands
+
+Create a migration:
+
+```bash
+npx rn-sqlite-migrations create create_users --dir src/database/migrations
+```
+
+Validate your migration folder:
+
+```bash
+npx rn-sqlite-migrations validate --dir src/database/migrations
+```
+
+Generate a static manifest for bundled SQL loading:
+
+```bash
+npx rn-sqlite-migrations manifest --dir src/database/migrations --out src/database/migrations/manifest.generated.json
+```
+
 ## Examples
 
 Consumer examples live in:
 
 - `examples/basic-usage.ts`
+- `examples/expo-adapter.ts`
 - `examples/logger.ts`
+- `examples/quick-sqlite-adapter.ts`
+
+## Integrity and Health Checks
+
+The runner now supports integrity verification with stored SQL checksums.
+
+You can enable stricter enforcement with:
+
+```ts
+const runner = new MigrationRunner({
+  db: sqliteExecutor,
+  catalog,
+  readSqlFile,
+  integrityMode: "strict",
+});
+```
+
+And you can inspect health issues before running migrations:
+
+```ts
+const report = await runner.healthCheck();
+```
+
+Useful when you want to detect:
+
+- checksum drift in already-applied migrations
+- applied migrations missing from the current catalog
+- rollback-unavailable situations
+
+## Internal Docs
+
+Additional English documentation lives in:
+
+- `docs/architecture.md`
+- `docs/coverage-roadmap.en.md`
+- `docs/coverage.md`
+- `docs/excellence.en.md`
+- `docs/improvements.md`
+- `docs/implementation-tasks.md`
+- `docs/quickstart.md`
+
+Documentacao adicional em portugues vive em:
+
+- `docs/coverage-roadmap.pt-BR.md`
+- `docs/excellence.pt-BR.md`
 
 ## Local Testing
 
@@ -213,3 +302,9 @@ npm run test:coverage
 ```
 
 This writes raw V8 coverage files into `coverage/v8/` and prints the coverage summary in the terminal.
+
+## Support
+
+If you want to support the project:
+
+- Buy Me a Coffee: `buymeacoffee.com/andmarruda`

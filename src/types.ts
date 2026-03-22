@@ -19,6 +19,8 @@ export interface MigrationRecord {
   name: string;
   batch: number;
   applied_at: string;
+  source_directory?: string | null;
+  up_checksum?: string | null;
 }
 
 export interface MigrationContext {
@@ -77,6 +79,8 @@ export interface MigrationRunnerOptions {
   db: SqliteExecutor;
   catalog: MigrationCatalog;
   readSqlFile(input: { directory: string; path: string }): Promise<string>;
+  calculateChecksum?: (sql: string) => string;
+  integrityMode?: "off" | "warn" | "strict";
   tableName?: string;
   now?: () => string;
   logger?: MigrationLogger;
@@ -105,6 +109,8 @@ export interface RollbackPlanItem {
 export interface MigrationLogEvent {
   type:
     | "repository:ensured"
+    | "integrity:issue"
+    | "integrity:passed"
     | "migration:start"
     | "migration:complete"
     | "migration:skipped"
@@ -124,6 +130,24 @@ export interface MigrationLogEvent {
 
 export interface MigrationLogger {
   log(event: MigrationLogEvent): void | Promise<void>;
+}
+
+export interface MigrationHealthIssue {
+  migrationName: string;
+  reason:
+    | "checksum-mismatch"
+    | "missing-from-catalog"
+    | "rollback-unavailable";
+  expectedChecksum?: string | null;
+  actualChecksum?: string | null;
+  details?: string;
+}
+
+export interface MigrationHealthReport {
+  appliedCount: number;
+  pendingCount: number;
+  issues: MigrationHealthIssue[];
+  ok: boolean;
 }
 
 export class MigrationError extends Error {

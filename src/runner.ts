@@ -1,8 +1,11 @@
+import { defaultChecksum } from "./checksum";
 import { executeSqlBatch } from "./sql";
 import type {
   AppliedMigration,
   MigrationContext,
   MigrationDefinition,
+  MigrationHealthIssue,
+  MigrationHealthReport,
   MigrationExecutionResult,
   MigrationLogEvent,
   MigrationPhase,
@@ -25,6 +28,8 @@ export class MigrationRunner {
   private readonly tableName: string;
   private readonly now: () => string;
   private readonly logger: MigrationRunnerOptions["logger"];
+  private readonly calculateChecksum: NonNullable<MigrationRunnerOptions["calculateChecksum"]>;
+  private readonly integrityMode: NonNullable<MigrationRunnerOptions["integrityMode"]>;
 
   constructor(options: MigrationRunnerOptions) {
     this.db = options.db;
@@ -33,10 +38,13 @@ export class MigrationRunner {
     this.tableName = options.tableName ?? DEFAULT_TABLE_NAME;
     this.now = options.now ?? (() => new Date().toISOString());
     this.logger = options.logger;
+    this.calculateChecksum = options.calculateChecksum ?? defaultChecksum;
+    this.integrityMode = options.integrityMode ?? "warn";
   }
 
   async migrate(): Promise<MigrationExecutionResult> {
     await this.ensureRepository();
+    await this.assertIntegrity("migrate");
     const applied = await this.getAppliedMigrations();
     const appliedNames = new Set(applied.map((migration) => migration.name));
     const pending = this.catalog.migrations.filter(
@@ -70,18 +78,20 @@ export class MigrationRunner {
 
       await this.db.withTransaction(async () => {
         const context = this.createContext(migration.name);
+        const upSql = await context.readSqlFile(migration.sql.up);
+        const upChecksum = this.calculateChecksum(upSql);
         await this.runHook(migration, "beforeDestructive", batch, () =>
           migration.beforeDestructive?.(context),
         );
         await this.runHook(migration, "beforeUp", batch, () => migration.beforeUp?.(context));
-        await this.runSqlFile(migration, "up", migration.sql.up, batch, context);
+        await this.runSqlText(migration, "up", migration.sql.up, batch, upSql);
         await this.runHook(migration, "afterUp", batch, () => migration.afterUp?.(context));
         await this.runPhase(
           migration,
           "record",
           batch,
           undefined,
-          () => this.recordMigration(migration.name, batch),
+          () => this.recordMigration(migration.name, batch, upChecksum),
         );
       });
 
@@ -104,6 +114,7 @@ export class MigrationRunner {
 
   async rollbackLastBatch(): Promise<RollbackExecutionResult> {
     await this.ensureRepository();
+    await this.assertIntegrity("rollback");
     const batch = await this.getLastBatchNumber();
 
     if (batch === 0) {
@@ -247,6 +258,86 @@ export class MigrationRunner {
     return result;
   }
 
+  async healthCheck(): Promise<MigrationHealthReport> {
+    await this.ensureRepository();
+    const applied = await this.getAppliedMigrations();
+    const appliedNames = new Set(applied.map((migration) => migration.name));
+    const issues: MigrationHealthIssue[] = [];
+    const catalogIndex = new Map(
+      this.catalog.migrations.map((migration) => [migration.name, migration]),
+    );
+
+    for (const record of applied) {
+      const migration = catalogIndex.get(record.name);
+
+      if (!migration) {
+        issues.push({
+          migrationName: record.name,
+          reason: "missing-from-catalog",
+          details: "The applied migration is not present in the current catalog.",
+        });
+        continue;
+      }
+
+      const sql = await this.readSqlFile({
+        directory: this.catalog.directory,
+        path: migration.sql.up,
+      });
+      const actualChecksum = this.calculateChecksum(sql);
+      const expectedChecksum = record.up_checksum ?? null;
+
+      if (expectedChecksum && expectedChecksum !== actualChecksum) {
+        issues.push({
+          migrationName: record.name,
+          reason: "checksum-mismatch",
+          expectedChecksum,
+          actualChecksum,
+          details: `The applied migration checksum does not match the current "${migration.sql.up}" contents.`,
+        });
+      }
+    }
+
+    const rollbackPlan = await this.planRollbackLastBatch();
+    for (const item of rollbackPlan) {
+      if (!item.reversible) {
+        issues.push({
+          migrationName: item.name,
+          reason: "rollback-unavailable",
+          details: item.reason,
+        });
+      }
+    }
+
+    const report = {
+      appliedCount: applied.length,
+      pendingCount: this.catalog.migrations.filter(
+        (migration) => !appliedNames.has(migration.name),
+      ).length,
+      issues,
+      ok: issues.length === 0,
+    };
+
+    if (report.ok) {
+      await this.log({
+        type: "integrity:passed",
+        details: {
+          appliedCount: report.appliedCount,
+          pendingCount: report.pendingCount,
+        },
+      });
+    } else {
+      for (const issue of report.issues) {
+        await this.log({
+          type: "integrity:issue",
+          migrationName: issue.migrationName,
+          details: issue as unknown as Record<string, unknown>,
+        });
+      }
+    }
+
+    return report;
+  }
+
   private createContext(migrationName: string): MigrationContext {
     return {
       db: this.db,
@@ -270,10 +361,15 @@ export class MigrationRunner {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL UNIQUE,
           batch INTEGER NOT NULL,
-          applied_at TEXT NOT NULL
+          applied_at TEXT NOT NULL,
+          up_checksum TEXT,
+          source_directory TEXT
         )`,
       });
     });
+
+    await this.ensureRepositoryColumn("up_checksum", "TEXT");
+    await this.ensureRepositoryColumn("source_directory", "TEXT");
 
     await this.log({
       type: "repository:ensured",
@@ -284,7 +380,7 @@ export class MigrationRunner {
   private async getAppliedMigrations(): Promise<AppliedMigration[]> {
     const table = quoteIdentifier(this.tableName);
     const rows = await this.db.query<AppliedMigration>({
-      sql: `SELECT name, batch, applied_at FROM ${table} ORDER BY name ASC`,
+      sql: `SELECT name, batch, applied_at, up_checksum, source_directory FROM ${table} ORDER BY name ASC`,
     });
 
     return rows;
@@ -293,7 +389,7 @@ export class MigrationRunner {
   private async getAppliedMigrationsByBatch(batch: number): Promise<AppliedMigration[]> {
     const table = quoteIdentifier(this.tableName);
     const rows = await this.db.query<AppliedMigration>({
-      sql: `SELECT name, batch, applied_at FROM ${table} WHERE batch = ? ORDER BY name ASC`,
+      sql: `SELECT name, batch, applied_at, up_checksum, source_directory FROM ${table} WHERE batch = ? ORDER BY name ASC`,
       params: [batch],
     });
 
@@ -309,11 +405,11 @@ export class MigrationRunner {
     return Number(rows[0]?.batch ?? 0);
   }
 
-  private async recordMigration(name: string, batch: number) {
+  private async recordMigration(name: string, batch: number, upChecksum: string) {
     const table = quoteIdentifier(this.tableName);
     await this.db.execute({
-      sql: `INSERT INTO ${table} (name, batch, applied_at) VALUES (?, ?, ?)`,
-      params: [name, batch, this.now()],
+      sql: `INSERT INTO ${table} (name, batch, applied_at, up_checksum, source_directory) VALUES (?, ?, ?, ?, ?)`,
+      params: [name, batch, this.now(), upChecksum, this.catalog.directory],
     });
   }
 
@@ -323,6 +419,20 @@ export class MigrationRunner {
       sql: `DELETE FROM ${table} WHERE name = ?`,
       params: [name],
     });
+  }
+
+  private async ensureRepositoryColumn(name: string, type: string) {
+    const table = quoteIdentifier(this.tableName);
+    const rows = await this.db.query<{ name?: string }>({
+      sql: `PRAGMA table_info(${table})`,
+    });
+    const hasColumn = rows.some((row) => row?.name === name);
+
+    if (!hasColumn) {
+      await this.db.execute({
+        sql: `ALTER TABLE ${table} ADD COLUMN ${quoteIdentifier(name)} ${type}`,
+      });
+    }
   }
 
   private buildRollbackBlockReason(migration: MigrationDefinition) {
@@ -369,6 +479,18 @@ export class MigrationRunner {
   ) {
     await this.runPhase(migration, phase, batch, sqlFile, async () => {
       const sql = await context.readSqlFile(sqlFile);
+      await executeSqlBatch(this.db, sql);
+    });
+  }
+
+  private async runSqlText(
+    migration: MigrationDefinition,
+    phase: Extract<MigrationPhase, "up" | "down">,
+    sqlFile: string,
+    batch: number | null,
+    sql: string,
+  ) {
+    await this.runPhase(migration, phase, batch, sqlFile, async () => {
       await executeSqlBatch(this.db, sql);
     });
   }
@@ -437,6 +559,26 @@ export class MigrationRunner {
     await this.logger.log({
       ...event,
       timestamp: this.now(),
+    });
+  }
+
+  private async assertIntegrity(phase: "migrate" | "rollback") {
+    if (this.integrityMode === "off") {
+      return;
+    }
+
+    const report = await this.healthCheck();
+    if (report.ok) {
+      return;
+    }
+
+    if (this.integrityMode === "warn") {
+      return;
+    }
+
+    throw new RuntimeMigrationError({
+      message: `Migration integrity check failed before "${phase}". Found ${report.issues.length} issue(s).`,
+      phase: "repository",
     });
   }
 }
