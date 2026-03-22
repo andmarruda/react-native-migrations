@@ -658,8 +658,8 @@ test("MigrationRunner wraps hook failures for all lifecycle hook phases", async 
 });
 
 test("CLI creates timestamped files, validates migrations, and generates a manifest", () => {
-  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rn-sqlite-migrations-cli-"));
-  const cliPath = path.resolve(__dirname, "..", "bin", "rn-sqlite-migrations.cjs");
+  const tempDirectory = createCliTempDirectory();
+  const cliPath = getCliPath();
 
   const createOutput = execFileSync(
     "node",
@@ -707,4 +707,81 @@ test("CLI creates timestamped files, validates migrations, and generates a manif
       down: "20260322090000_create_users.down.sql",
     },
   });
+});
+
+test("CLI rejects unknown commands", () => {
+  const cliPath = getCliPath();
+
+  assert.throws(() => {
+    execFileSync("node", [cliPath, "unknown-command"], {
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+  }, /Unknown command/);
+});
+
+test("CLI rejects missing migration names and duplicate creates", () => {
+  const cliPath = getCliPath();
+  const tempDirectory = createCliTempDirectory("rn-sqlite-migrations-cli-duplicate-");
+
+  assert.throws(() => {
+    execFileSync("node", [cliPath, "create"], {
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+  }, /Please provide a migration name/);
+
+  execFileSync(
+    "node",
+    [
+      cliPath,
+      "create",
+      "create_users",
+      "--dir",
+      tempDirectory,
+      "--timestamp",
+      "20260322101010",
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.throws(() => {
+    execFileSync(
+      "node",
+      [
+        cliPath,
+        "create",
+        "create_users",
+        "--dir",
+        tempDirectory,
+        "--timestamp",
+        "20260322101010",
+      ],
+      {
+        encoding: "utf8",
+        stdio: "pipe",
+      },
+    );
+  }, /already exists/);
+});
+
+test("CLI validate reports invalid file names and missing down files", () => {
+  const cliPath = getCliPath();
+  const tempDirectory = createCliTempDirectory("rn-sqlite-migrations-cli-invalid-");
+
+  fs.writeFileSync(
+    path.join(tempDirectory, "bad-name.sql"),
+    "-- invalid file name for validation\n",
+  );
+  fs.writeFileSync(
+    path.join(tempDirectory, "20260322111111_only_up.up.sql"),
+    "-- valid up file without matching down\n",
+  );
+
+  assert.throws(() => {
+    execFileSync("node", [cliPath, "validate", "--dir", tempDirectory], {
+      encoding: "utf8",
+      stdio: "pipe",
+    });
+  }, /Invalid migration file name|missing a \.down\.sql file/);
 });
