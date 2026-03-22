@@ -205,3 +205,11 @@ This script:
 1. builds the package into `dist/`
 2. imports the built output
 3. runs local tests against the package in isolation
+
+To collect native Node coverage for the built package, run:
+
+```bash
+npm run test:coverage
+```
+
+This writes raw V8 coverage files into `coverage/v8/` and prints the coverage summary in the terminal.
