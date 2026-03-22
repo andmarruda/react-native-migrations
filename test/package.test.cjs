@@ -19,6 +19,7 @@ class FakeSqliteExecutor {
     this.queryResponses = new Map();
     this.transactions = 0;
     this.failOnSql = null;
+    this.failOnRepositorySetup = false;
   }
 
   setQueryResponse(sql, rows) {
@@ -26,6 +27,13 @@ class FakeSqliteExecutor {
   }
 
   async execute(statement) {
+    if (
+      this.failOnRepositorySetup &&
+      statement.sql.startsWith("CREATE TABLE IF NOT EXISTS")
+    ) {
+      throw new Error("Injected repository setup failure");
+    }
+
     if (this.failOnSql && statement.sql.includes(this.failOnSql)) {
       throw new Error(`Injected failure for statement: ${statement.sql}`);
     }
@@ -79,6 +87,14 @@ class FakeSqliteExecutor {
     this.transactions += 1;
     return callback();
   }
+}
+
+function createCliTempDirectory(prefix = "rn-sqlite-migrations-cli-") {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function getCliPath() {
+  return path.resolve(__dirname, "..", "bin", "rn-sqlite-migrations.cjs");
 }
 
 test("defineMigrations sorts migrations by name", () => {
@@ -153,6 +169,60 @@ test("splitSqlStatements ignores semicolons inside strings and strips line comme
     'INSERT INTO messages(text) VALUES("still;inside")',
     "SELECT * FROM messages",
   ]);
+});
+
+test("splitSqlStatements handles empty input, trailing statements, and escaped quotes", () => {
+  assert.deepEqual(splitSqlStatements(""), []);
+  assert.deepEqual(splitSqlStatements("SELECT 1"), ["SELECT 1"]);
+  assert.deepEqual(
+    splitSqlStatements("INSERT INTO notes(text) VALUES('it\\'s fine;still fine');"),
+    ["INSERT INTO notes(text) VALUES('it\\'s fine;still fine')"],
+  );
+});
+
+test("MigrationRunner logs skipped migrations when nothing is pending", async () => {
+  const db = new FakeSqliteExecutor();
+  db.migrationRecords = [
+    {
+      name: "202603210001_create_users",
+      batch: 1,
+      applied_at: "2026-03-21T00:00:00.000Z",
+    },
+  ];
+
+  const loggedEvents = [];
+  const catalog = defineMigrations({
+    directory: "db/migrations",
+    migrations: [
+      {
+        name: "202603210001_create_users",
+        sql: {
+          up: "202603210001_create_users.up.sql",
+          down: "202603210001_create_users.down.sql",
+        },
+      },
+    ],
+  });
+
+  const runner = new MigrationRunner({
+    db,
+    catalog,
+    logger: {
+      log(event) {
+        loggedEvents.push(event);
+      },
+    },
+    readSqlFile: async () => "SELECT 1;",
+  });
+
+  const result = await runner.migrate();
+
+  assert.deepEqual(result, {
+    executed: [],
+    skipped: ["202603210001_create_users"],
+    batch: null,
+  });
+  assert.ok(loggedEvents.some((event) => event.type === "migration:skipped"));
 });
 
 test("MigrationRunner migrates pending files, executes hooks, and reports status", async () => {
@@ -320,6 +390,33 @@ test("MigrationRunner rolls back the last batch in reverse order", async () => {
   assert.equal(db.migrationRecords.length, 0);
 });
 
+test("MigrationRunner reports empty rollback state", async () => {
+  const db = new FakeSqliteExecutor();
+  const loggedEvents = [];
+
+  const runner = new MigrationRunner({
+    db,
+    catalog: defineMigrations({
+      directory: "db/migrations",
+      migrations: [],
+    }),
+    logger: {
+      log(event) {
+        loggedEvents.push(event);
+      },
+    },
+    readSqlFile: async () => "SELECT 1;",
+  });
+
+  const result = await runner.rollbackLastBatch();
+
+  assert.deepEqual(result, {
+    rolledBack: [],
+    batch: null,
+  });
+  assert.ok(loggedEvents.some((event) => event.type === "rollback:empty"));
+});
+
 test("MigrationRunner exposes rollback planning and blocks irreversible migrations", async () => {
   const db = new FakeSqliteExecutor();
   db.migrationRecords = [
@@ -370,6 +467,98 @@ test("MigrationRunner exposes rollback planning and blocks irreversible migratio
   });
 });
 
+test("MigrationRunner reports missing catalog entries during rollback planning", async () => {
+  const db = new FakeSqliteExecutor();
+  db.migrationRecords = [
+    {
+      name: "202603210004_deleted_from_catalog",
+      batch: 3,
+      applied_at: "2026-03-21T00:00:00.000Z",
+    },
+  ];
+
+  const runner = new MigrationRunner({
+    db,
+    catalog: defineMigrations({
+      directory: "db/migrations",
+      migrations: [],
+    }),
+    readSqlFile: async () => "SELECT 1;",
+  });
+
+  const plan = await runner.planRollbackLastBatch();
+
+  assert.deepEqual(plan, [
+    {
+      name: "202603210004_deleted_from_catalog",
+      batch: 3,
+      reversible: false,
+      reason: "migration-missing-from-catalog",
+    },
+  ]);
+
+  await assert.rejects(() => runner.rollbackLastBatch(), /marked as irreversible/);
+});
+
+test("MigrationRunner reports missing down SQL files in rollback planning", async () => {
+  const db = new FakeSqliteExecutor();
+  db.migrationRecords = [
+    {
+      name: "202603210005_missing_down",
+      batch: 4,
+      applied_at: "2026-03-21T00:00:00.000Z",
+    },
+  ];
+
+  const runner = new MigrationRunner({
+    db,
+    catalog: defineMigrations({
+      directory: "db/migrations",
+      migrations: [
+        {
+          name: "202603210005_missing_down",
+          sql: {
+            up: "202603210005_missing_down.up.sql",
+          },
+        },
+      ],
+    }),
+    readSqlFile: async () => "SELECT 1;",
+  });
+
+  const plan = await runner.planRollbackLastBatch();
+
+  assert.deepEqual(plan, [
+    {
+      name: "202603210005_missing_down",
+      batch: 4,
+      reversible: false,
+      reason: "missing-down-sql-file",
+    },
+  ]);
+});
+
+test("MigrationRunner wraps repository setup failures in MigrationError", async () => {
+  const db = new FakeSqliteExecutor();
+  db.failOnRepositorySetup = true;
+
+  const runner = new MigrationRunner({
+    db,
+    catalog: defineMigrations({
+      directory: "db/migrations",
+      migrations: [],
+    }),
+    readSqlFile: async () => "SELECT 1;",
+  });
+
+  await assert.rejects(() => runner.status(), (error) => {
+    assert.equal(error instanceof MigrationError, true);
+    assert.equal(error.phase, "repository");
+    assert.match(error.message, /repository setup/);
+    return true;
+  });
+});
+
 test("MigrationRunner wraps phase failures in MigrationError", async () => {
   const db = new FakeSqliteExecutor();
   db.failOnSql = "ALTER TABLE users ADD COLUMN failed_column TEXT";
@@ -406,6 +595,66 @@ test("MigrationRunner wraps phase failures in MigrationError", async () => {
     assert.equal(error.sqlFile, "202603210010_breaking_change.up.sql");
     return true;
   });
+});
+
+test("MigrationRunner wraps hook failures for all lifecycle hook phases", async () => {
+  const phases = [
+    ["beforeUp", "beforeUp"],
+    ["afterUp", "afterUp"],
+    ["beforeDown", "beforeDown"],
+    ["afterDown", "afterDown"],
+  ];
+
+  for (const [hookName, expectedPhase] of phases) {
+    const db = new FakeSqliteExecutor();
+
+    const migration = {
+      name: `202603210020_${hookName}`,
+      sql: {
+        up: `202603210020_${hookName}.up.sql`,
+        down: `202603210020_${hookName}.down.sql`,
+      },
+      [hookName]: async () => {
+        throw new Error(`Injected ${hookName} failure`);
+      },
+    };
+
+    const runner = new MigrationRunner({
+      db,
+      catalog: defineMigrations({
+        directory: "db/migrations",
+        migrations: [migration],
+      }),
+      readSqlFile: async ({ path }) => {
+        if (path.endsWith(".up.sql")) {
+          return "SELECT 1;";
+        }
+
+        return "SELECT 1;";
+      },
+    });
+
+    const operation =
+      hookName === "beforeDown" || hookName === "afterDown"
+        ? async () => {
+            db.migrationRecords = [
+              {
+                name: migration.name,
+                batch: 1,
+                applied_at: "2026-03-21T00:00:00.000Z",
+              },
+            ];
+            return runner.rollbackLastBatch();
+          }
+        : () => runner.migrate();
+
+    await assert.rejects(operation, (error) => {
+      assert.equal(error instanceof MigrationError, true);
+      assert.equal(error.phase, expectedPhase);
+      assert.equal(error.migrationName, migration.name);
+      return true;
+    });
+  }
 });
 
 test("CLI creates timestamped files, validates migrations, and generates a manifest", () => {
