@@ -1,7 +1,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 
-const { defineMigrations, MigrationRunner, splitSqlStatements } = require("../dist/index.js");
+const {
+  defineMigrations,
+  MigrationError,
+  MigrationRunner,
+  splitSqlStatements,
+} = require("../dist/index.js");
 
 class FakeSqliteExecutor {
   constructor() {
@@ -9,6 +18,7 @@ class FakeSqliteExecutor {
     this.executedStatements = [];
     this.queryResponses = new Map();
     this.transactions = 0;
+    this.failOnSql = null;
   }
 
   setQueryResponse(sql, rows) {
@@ -16,6 +26,10 @@ class FakeSqliteExecutor {
   }
 
   async execute(statement) {
+    if (this.failOnSql && statement.sql.includes(this.failOnSql)) {
+      throw new Error(`Injected failure for statement: ${statement.sql}`);
+    }
+
     this.executedStatements.push(statement.sql);
 
     if (statement.sql.startsWith("CREATE TABLE IF NOT EXISTS")) {
@@ -106,6 +120,26 @@ test("defineMigrations rejects duplicate names", () => {
   }, /Duplicate migration name/);
 });
 
+test("defineMigrations rejects irreversible migrations with down SQL", () => {
+  assert.throws(() => {
+    defineMigrations({
+      directory: "db/migrations",
+      migrations: [
+        {
+          name: "202603210001_users",
+          sql: {
+            up: "users.up.sql",
+            down: "users.down.sql",
+          },
+          metadata: {
+            reversible: false,
+          },
+        },
+      ],
+    });
+  }, /cannot define a down SQL file/);
+});
+
 test("splitSqlStatements ignores semicolons inside strings and strips line comments", () => {
   const statements = splitSqlStatements(`
     -- create a row
@@ -128,6 +162,7 @@ test("MigrationRunner migrates pending files, executes hooks, and reports status
   ]);
 
   const hookOrder = [];
+  const loggedEvents = [];
   const catalog = defineMigrations({
     directory: "db/migrations",
     migrations: [
@@ -165,6 +200,11 @@ test("MigrationRunner migrates pending files, executes hooks, and reports status
   const runner = new MigrationRunner({
     db,
     catalog,
+    logger: {
+      log(event) {
+        loggedEvents.push(event);
+      },
+    },
     readSqlFile: async ({ path }) => {
       const files = {
         "202603210001_create_users.up.sql":
@@ -195,6 +235,12 @@ test("MigrationRunner migrates pending files, executes hooks, and reports status
   assert.equal(db.migrationRecords[0].applied_at, "2026-03-21T00:00:00.000Z");
   assert.ok(
     db.executedStatements.includes("ALTER TABLE users ADD COLUMN first_name TEXT"),
+  );
+  assert.ok(loggedEvents.some((event) => event.type === "migration:start"));
+  assert.ok(
+    loggedEvents.some(
+      (event) => event.type === "migration:phase:complete" && event.phase === "up",
+    ),
   );
 });
 
@@ -272,4 +318,144 @@ test("MigrationRunner rolls back the last batch in reverse order", async () => {
     "create_users:afterDown",
   ]);
   assert.equal(db.migrationRecords.length, 0);
+});
+
+test("MigrationRunner exposes rollback planning and blocks irreversible migrations", async () => {
+  const db = new FakeSqliteExecutor();
+  db.migrationRecords = [
+    {
+      name: "202603210003_irreversible",
+      batch: 2,
+      applied_at: "2026-03-21T00:00:00.000Z",
+    },
+  ];
+
+  const catalog = defineMigrations({
+    directory: "db/migrations",
+    migrations: [
+      {
+        name: "202603210003_irreversible",
+        sql: {
+          up: "202603210003_irreversible.up.sql",
+        },
+        metadata: {
+          reversible: false,
+        },
+      },
+    ],
+  });
+
+  const runner = new MigrationRunner({
+    db,
+    catalog,
+    readSqlFile: async () => "SELECT 1;",
+  });
+
+  const plan = await runner.planRollbackLastBatch();
+
+  assert.deepEqual(plan, [
+    {
+      name: "202603210003_irreversible",
+      batch: 2,
+      reversible: false,
+      reason: "migration-marked-as-irreversible",
+    },
+  ]);
+
+  await assert.rejects(() => runner.rollbackLastBatch(), (error) => {
+    assert.equal(error instanceof MigrationError, true);
+    assert.equal(error.migrationName, "202603210003_irreversible");
+    assert.equal(error.phase, "down");
+    return true;
+  });
+});
+
+test("MigrationRunner wraps phase failures in MigrationError", async () => {
+  const db = new FakeSqliteExecutor();
+  db.failOnSql = "ALTER TABLE users ADD COLUMN failed_column TEXT";
+
+  const catalog = defineMigrations({
+    directory: "db/migrations",
+    migrations: [
+      {
+        name: "202603210010_breaking_change",
+        sql: {
+          up: "202603210010_breaking_change.up.sql",
+          down: "202603210010_breaking_change.down.sql",
+        },
+      },
+    ],
+  });
+
+  const runner = new MigrationRunner({
+    db,
+    catalog,
+    readSqlFile: async ({ path }) => {
+      if (path === "202603210010_breaking_change.up.sql") {
+        return "ALTER TABLE users ADD COLUMN failed_column TEXT;";
+      }
+
+      return "DROP TABLE users;";
+    },
+  });
+
+  await assert.rejects(() => runner.migrate(), (error) => {
+    assert.equal(error instanceof MigrationError, true);
+    assert.match(error.message, /failed during phase "up"/);
+    assert.equal(error.migrationName, "202603210010_breaking_change");
+    assert.equal(error.sqlFile, "202603210010_breaking_change.up.sql");
+    return true;
+  });
+});
+
+test("CLI creates timestamped files, validates migrations, and generates a manifest", () => {
+  const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rn-sqlite-migrations-cli-"));
+  const cliPath = path.resolve(__dirname, "..", "bin", "rn-sqlite-migrations.cjs");
+
+  const createOutput = execFileSync(
+    "node",
+    [
+      cliPath,
+      "create",
+      "create_users",
+      "--dir",
+      tempDirectory,
+      "--timestamp",
+      "20260322090000",
+    ],
+    { encoding: "utf8" },
+  );
+
+  assert.match(createOutput, /20260322090000_create_users\.up\.sql/);
+  assert.equal(
+    fs.existsSync(path.join(tempDirectory, "20260322090000_create_users.up.sql")),
+    true,
+  );
+  assert.equal(
+    fs.existsSync(path.join(tempDirectory, "20260322090000_create_users.down.sql")),
+    true,
+  );
+
+  const validateOutput = execFileSync(
+    "node",
+    [cliPath, "validate", "--dir", tempDirectory],
+    { encoding: "utf8" },
+  );
+  assert.match(validateOutput, /Validated 1 migrations/);
+
+  const manifestPath = path.join(tempDirectory, "manifest.generated.json");
+  const manifestOutput = execFileSync(
+    "node",
+    [cliPath, "manifest", "--dir", tempDirectory, "--out", manifestPath],
+    { encoding: "utf8" },
+  );
+
+  assert.match(manifestOutput, /Generated manifest/);
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  assert.deepEqual(manifest, {
+    "20260322090000_create_users": {
+      up: "20260322090000_create_users.up.sql",
+      down: "20260322090000_create_users.down.sql",
+    },
+  });
 });
