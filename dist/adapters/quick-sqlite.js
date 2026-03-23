@@ -21,16 +21,43 @@ function toParams(params) {
     return params ?? [];
 }
 function createQuickSqliteExecutor(database) {
+    let activeTransaction;
+    let transactionQueue = Promise.resolve();
+    function getExecutor() {
+        return activeTransaction ?? database;
+    }
     return {
         async execute(statement) {
-            await database.executeAsync(statement.sql, toParams(statement.params));
+            await getExecutor().executeAsync(statement.sql, toParams(statement.params));
         },
         async query(statement) {
-            const result = await database.executeAsync(statement.sql, toParams(statement.params));
+            const result = await getExecutor().executeAsync(statement.sql, toParams(statement.params));
             return toRows(result.rows);
         },
         async withTransaction(callback) {
-            return database.transaction(async () => callback());
+            if (activeTransaction) {
+                return callback();
+            }
+            const previousTransaction = transactionQueue;
+            let releaseNextTransaction = () => undefined;
+            transactionQueue = new Promise((resolve) => {
+                releaseNextTransaction = resolve;
+            });
+            await previousTransaction;
+            try {
+                return await database.transaction(async (tx) => {
+                    activeTransaction = tx;
+                    try {
+                        return await callback();
+                    }
+                    finally {
+                        activeTransaction = undefined;
+                    }
+                });
+            }
+            finally {
+                releaseNextTransaction();
+            }
         },
     };
 }

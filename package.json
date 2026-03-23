@@ -4,14 +4,38 @@
   "description": "Laravel-style SQLite migrations for React Native with pre-destructive data migration hooks.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "require": "./dist/cli.js",
+      "default": "./dist/cli.js"
+    }
+  },
   "bin": {
     "rn-sqlite-migrations": "./bin/rn-sqlite-migrations.cjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andmarruda/react-native-sqlite-migrations.git"
+  },
+  "homepage": "https://github.com/andmarruda/react-native-sqlite-migrations#readme",
+  "bugs": {
+    "url": "https://github.com/andmarruda/react-native-sqlite-migrations/issues"
   },
   "files": [
     "bin",
     "dist",
-    "src",
     "README.md",
+    "CHANGELOG.md",
     "docs",
     "examples",
     "templates"
@@ -21,6 +45,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test test/**/*.test.cjs",
     "test:coverage": "npm run build && rm -rf coverage && mkdir -p coverage/v8 && NODE_V8_COVERAGE=coverage/v8 node --experimental-test-coverage --test test/**/*.test.cjs",
+    "pack:check": "npm pack --dry-run --cache /tmp/npm-cache",
     "migrations:create": "node ./bin/rn-sqlite-migrations.cjs create",
     "migrations:validate": "node ./bin/rn-sqlite-migrations.cjs validate",
     "migrations:manifest": "node ./bin/rn-sqlite-migrations.cjs manifest"

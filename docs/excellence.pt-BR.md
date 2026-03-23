@@ -6,10 +6,13 @@ Este documento foca no que falta para o pacote ser realmente excelente em apps o
 
 ### Adaptadores Oficiais dos Drivers
 
-O pacote ainda precisa de adaptadores oficiais para os engines SQLite mais comuns no ecossistema React Native:
+O pacote agora inclui adaptadores oficiais para:
 
 - `expo-sqlite`
 - `react-native-quick-sqlite`
+
+Ainda falta:
+
 - `react-native-sqlite-storage`
 
 Por que isso importa:
@@ -46,7 +49,7 @@ Ainda falta:
 
 ### Integridade de Schema
 
-O pacote ainda precisa de garantias mais fortes sobre consistencia das migrations.
+A integridade das migrations esta mais forte do que na versao inicial do pacote.
 
 Adicoes de alto valor:
 
@@ -54,6 +57,11 @@ Adicoes de alto valor:
 - validacao do manifest de migrations
 - deteccao de drift entre catalogo e estado executado
 - modo estrito opcional para bloquear inconsistencias arriscadas
+
+Ainda vale evoluir:
+
+- orientacao mais forte para recuperacao de corrupcao
+- passos mais explicitos para remediacao de drift em device
 
 ### Contrato de Rollback Melhor
 
@@ -91,14 +99,13 @@ Ainda falta:
 
 ### Confianca de CI e Release
 
-Para ganhar confianca no ecossistema, o pacote precisa validar melhor cada release.
+O repositorio agora tem uma base de CI com typecheck, testes com coverage e smoke test de publicacao.
 
 Ainda falta:
 
-- pipeline de CI com testes e thresholds de coverage
-- smoke test do pacote apos build
+- thresholds de coverage
 - validacao dos example apps
-- changelog versionado com notas de upgrade
+- notas de upgrade mais ricas por release
 
 ## O Que Faz o Pacote Parecer "Excelente"
 

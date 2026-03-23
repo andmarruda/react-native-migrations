@@ -116,6 +116,8 @@ Official adapter helpers are now available for:
 - `createExpoSqliteExecutor`
 - `createQuickSqliteExecutor`
 
+These helpers are covered by automated tests, but you should still validate the exact SQLite driver version used by your app before rollout.
+
 ## Migration Flow
 
 When you call `migrate()`, the library:
@@ -128,6 +130,9 @@ When you call `migrate()`, the library:
 6. loads the `.up.sql` file
 7. executes SQL statements sequentially
 8. records the migration with a `batch`
+
+By default, that local repository table is named `__rn_sqlite_migrations`.
+It is how the package keeps track of what already ran on the device.
 
 When you call `rollbackLastBatch()`, the library:
 
@@ -216,11 +221,15 @@ Create a migration:
 npx rn-sqlite-migrations create create_users --dir src/database/migrations
 ```
 
+If you pass `--timestamp`, use the format `yyyymmddHHMMSS`.
+
 Validate your migration folder:
 
 ```bash
 npx rn-sqlite-migrations validate --dir src/database/migrations
 ```
+
+`down.sql` files are optional. If you prefer forward-only migrations, validation still passes as long as the `up.sql` file is present and correctly named.
 
 Generate a static manifest for bundled SQL loading:
 
@@ -256,6 +265,20 @@ And you can inspect health issues before running migrations:
 
 ```ts
 const report = await runner.healthCheck();
+```
+
+## Release Readiness
+
+The repository now includes:
+
+- CI for typecheck, tests with coverage, and publish-artifact smoke checks
+- npm package metadata for repository, issues, Node engine, and exports
+- a changelog for release notes
+
+Local release smoke check:
+
+```bash
+npm run pack:check
 ```
 
 Useful when you want to detect:

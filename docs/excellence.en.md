@@ -6,10 +6,13 @@ This document focuses on what would make the package genuinely excellent for off
 
 ### First-Party Driver Adapters
 
-The package still needs official adapters for the most common SQLite engines in React Native:
+The package now includes first-party adapters for:
 
 - `expo-sqlite`
 - `react-native-quick-sqlite`
+
+Still missing:
+
 - `react-native-sqlite-storage`
 
 Why this matters:
@@ -46,7 +49,7 @@ Still missing:
 
 ### Schema Integrity Features
 
-The package still needs stronger guarantees around migration consistency.
+Migration integrity is now stronger than the initial package version.
 
 High-value additions:
 
@@ -54,6 +57,11 @@ High-value additions:
 - migration manifest validation
 - drift detection between catalog and executed state
 - optional strict mode that blocks risky mismatches
+
+Still worth improving:
+
+- broader corruption recovery guidance
+- more explicit device-level drift remediation steps
 
 ### Better Rollback Contracts
 
@@ -91,14 +99,13 @@ Still needed:
 
 ### CI and Release Confidence
 
-For ecosystem trust, the package should ship with stronger validation around releases.
+The repository now has a baseline CI workflow that runs typecheck, tests with coverage, and an `npm pack --dry-run` smoke test.
 
 Still needed:
 
-- CI pipeline with tests and coverage thresholds
-- package smoke test after build
+- coverage thresholds
 - example app validation
-- versioned changelog and upgrade notes
+- richer upgrade notes per release
 
 ## What Would Make It Feel "Excellent"
 

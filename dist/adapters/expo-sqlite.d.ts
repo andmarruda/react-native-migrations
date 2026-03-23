@@ -1,6 +1,6 @@
 import type { SqliteExecutor } from "../types";
 interface ExpoSqliteDatabaseLike {
-    execAsync(sql: string): Promise<unknown>;
+    execAsync(sql: string, params?: unknown[] | undefined): Promise<unknown>;
     getAllAsync<T>(sql: string, params?: unknown[] | undefined): Promise<T[]>;
     runAsync?(sql: string, ...params: unknown[]): Promise<unknown>;
     withTransactionAsync<T>(callback: () => Promise<T>): Promise<T>;

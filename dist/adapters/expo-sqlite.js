@@ -11,7 +11,7 @@ function createExpoSqliteExecutor(database) {
                 await database.runAsync(statement.sql, ...toParams(statement.params));
                 return;
             }
-            await database.execAsync(statement.sql);
+            await database.execAsync(statement.sql, toParams(statement.params));
         },
         async query(statement) {
             return database.getAllAsync(statement.sql, toParams(statement.params));

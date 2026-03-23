@@ -46,16 +46,48 @@ function toParams(params?: SqlStatement["params"]) {
 }
 
 export function createQuickSqliteExecutor(database: QuickSqliteDatabaseLike): SqliteExecutor {
+  let activeTransaction: QuickSqliteTransactionLike | undefined;
+  let transactionQueue = Promise.resolve();
+
+  function getExecutor() {
+    return activeTransaction ?? database;
+  }
+
   return {
     async execute(statement) {
-      await database.executeAsync(statement.sql, toParams(statement.params));
+      await getExecutor().executeAsync(statement.sql, toParams(statement.params));
     },
     async query<T = QueryResultRow>(statement: SqlStatement) {
-      const result = await database.executeAsync<T>(statement.sql, toParams(statement.params));
+      const result = await getExecutor().executeAsync<T>(statement.sql, toParams(statement.params));
       return toRows<T>(result.rows as QuickRowsLike<T> | undefined);
     },
     async withTransaction(callback) {
-      return database.transaction(async () => callback());
+      if (activeTransaction) {
+        return callback();
+      }
+
+      const previousTransaction = transactionQueue;
+      let releaseNextTransaction: () => void = () => undefined;
+
+      transactionQueue = new Promise<void>((resolve) => {
+        releaseNextTransaction = resolve;
+      });
+
+      await previousTransaction;
+
+      try {
+        return await database.transaction(async (tx) => {
+          activeTransaction = tx;
+
+          try {
+            return await callback();
+          } finally {
+            activeTransaction = undefined;
+          }
+        });
+      } finally {
+        releaseNextTransaction();
+      }
     },
   };
 }

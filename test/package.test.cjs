@@ -268,6 +268,28 @@ test("splitSqlStatements handles empty input, trailing statements, and escaped q
   );
 });
 
+test("splitSqlStatements preserves double-dash inside quoted strings", () => {
+  assert.deepEqual(
+    splitSqlStatements("INSERT INTO notes(text) VALUES('a--b');\nSELECT 1;"),
+    ["INSERT INTO notes(text) VALUES('a--b')", "SELECT 1"],
+  );
+  assert.deepEqual(
+    splitSqlStatements('INSERT INTO notes(text) VALUES("--not-a-comment");'),
+    ['INSERT INTO notes(text) VALUES("--not-a-comment")'],
+  );
+});
+
+test("splitSqlStatements ignores block comments without splitting on inner semicolons", () => {
+  assert.deepEqual(
+    splitSqlStatements("SELECT 1; /* trailing; block; comment */ SELECT 2;"),
+    ["SELECT 1", "SELECT 2"],
+  );
+  assert.deepEqual(
+    splitSqlStatements("SELECT 1;\n/* block; comment */\nSELECT 2;"),
+    ["SELECT 1", "SELECT 2"],
+  );
+});
+
 test("defaultChecksum is stable for the same SQL input", () => {
   assert.equal(defaultChecksum("SELECT 1;"), defaultChecksum("SELECT 1;"));
   assert.notEqual(defaultChecksum("SELECT 1;"), defaultChecksum("SELECT 2;"));
@@ -289,6 +311,23 @@ test("CLI helpers parse arguments and normalize names", () => {
     resolveDirectory("/tmp/project", undefined),
     path.resolve("/tmp/project", "src/database/migrations"),
   );
+});
+
+test("createMigration rejects invalid custom timestamps", () => {
+  const tempDirectory = createCliTempDirectory("rn-sqlite-migrations-invalid-ts-");
+
+  assert.throws(() => {
+    createMigration({
+      cwd: "/tmp",
+      io: createIoCapture().io,
+      name: "create_users",
+      options: {
+        dir: tempDirectory,
+        timestamp: "abc",
+      },
+      templatesDirectory: path.resolve(__dirname, "..", "templates"),
+    });
+  }, /Invalid timestamp/);
 });
 
 test("index exports expose the public API surface", () => {
@@ -348,7 +387,7 @@ test("validateMigrations succeeds for a missing directory with zero migrations",
   assert.match(capture.stdout.join(""), /Validated 0 migrations/);
 });
 
-test("validateMigrations reports unsorted migration file names", { concurrency: false }, () => {
+test("validateMigrations accepts unordered directory listings when file names are valid", { concurrency: false }, () => {
   const tempDirectory = createCliTempDirectory("rn-sqlite-migrations-unsorted-");
   const capture = createIoCapture();
 
@@ -378,15 +417,15 @@ test("validateMigrations reports unsorted migration file names", { concurrency: 
   ];
 
   try {
-    assert.throws(() => {
-      validateMigrations({
-        cwd: "/tmp",
-        io: capture.io,
-        options: {
-          dir: tempDirectory,
-        },
-      });
-    }, /not ordered lexicographically/);
+    validateMigrations({
+      cwd: "/tmp",
+      io: capture.io,
+      options: {
+        dir: tempDirectory,
+      },
+    });
+
+    assert.match(capture.stdout.join(""), /Validated 2 migrations/);
   } finally {
     fs.readdirSync = originalReaddirSync;
   }
@@ -1144,17 +1183,13 @@ test("CLI rejects missing migration names and duplicate creates", () => {
   }, /empty slug/);
 });
 
-test("CLI validate reports invalid file names and missing down files", () => {
+test("CLI validate reports invalid file names", () => {
   const tempDirectory = createCliTempDirectory("rn-sqlite-migrations-cli-invalid-");
   const capture = createIoCapture();
 
   fs.writeFileSync(
     path.join(tempDirectory, "bad-name.sql"),
     "-- invalid file name for validation\n",
-  );
-  fs.writeFileSync(
-    path.join(tempDirectory, "20260322111111_only_up.up.sql"),
-    "-- valid up file without matching down\n",
   );
 
   assert.throws(() => {
@@ -1165,7 +1200,27 @@ test("CLI validate reports invalid file names and missing down files", () => {
         dir: tempDirectory,
       },
     });
-  }, /Invalid migration file name|missing a \.down\.sql file/);
+  }, /Invalid migration file name/);
+});
+
+test("CLI validate accepts migrations with only an up SQL file", () => {
+  const tempDirectory = createCliTempDirectory("rn-sqlite-migrations-cli-only-up-");
+  const capture = createIoCapture();
+
+  fs.writeFileSync(
+    path.join(tempDirectory, "20260322111111_only_up.up.sql"),
+    "-- valid up file without matching down\n",
+  );
+
+  validateMigrations({
+    cwd: "/tmp",
+    io: capture.io,
+    options: {
+      dir: tempDirectory,
+    },
+  });
+
+  assert.match(capture.stdout.join(""), /Validated 1 migrations/);
 });
 
 test("CLI validate reports a missing up SQL file", () => {
@@ -1310,6 +1365,30 @@ test("createExpoSqliteExecutor adapts expo-like database objects", async () => {
   assert.deepEqual(calls[2], ["withTransactionAsync"]);
 });
 
+test("createExpoSqliteExecutor forwards params when falling back to execAsync", async () => {
+  const calls = [];
+  const executor = createExpoSqliteExecutor({
+    async execAsync(sql, params) {
+      calls.push(["execAsync", sql, params]);
+    },
+    async getAllAsync() {
+      return [];
+    },
+    async withTransactionAsync(callback) {
+      return callback();
+    },
+  });
+
+  await executor.execute({
+    sql: "UPDATE users SET name = ? WHERE id = ?",
+    params: ["Ada", 1],
+  });
+
+  assert.deepEqual(calls, [
+    ["execAsync", "UPDATE users SET name = ? WHERE id = ?", ["Ada", 1]],
+  ]);
+});
+
 test("createQuickSqliteExecutor adapts quick-sqlite-like database objects", async () => {
   const calls = [];
   const executor = createQuickSqliteExecutor({
@@ -1339,4 +1418,120 @@ test("createQuickSqliteExecutor adapts quick-sqlite-like database objects", asyn
   assert.deepEqual(calls[0], ["executeAsync", "INSERT INTO users VALUES (?)", [2]]);
   assert.deepEqual(calls[1], ["executeAsync", "SELECT id FROM users", []]);
   assert.deepEqual(calls[2], ["transaction"]);
+});
+
+test("createQuickSqliteExecutor routes statements through the active transaction", async () => {
+  const calls = [];
+  const executor = createQuickSqliteExecutor({
+    async executeAsync(sql, params) {
+      calls.push(["db.executeAsync", sql, params]);
+      return { rows: { _array: [] } };
+    },
+    async transaction(callback) {
+      calls.push(["db.transaction"]);
+      return callback({
+        async executeAsync(sql, params) {
+          calls.push(["tx.executeAsync", sql, params]);
+          return { rows: { _array: [{ id: 7 }] } };
+        },
+      });
+    },
+  });
+
+  await executor.withTransaction(async () => {
+    await executor.execute({ sql: "INSERT INTO users VALUES (?)", params: [7] });
+    const rows = await executor.query({ sql: "SELECT id FROM users", params: [] });
+    assert.equal(rows[0].id, 7);
+  });
+
+  assert.deepEqual(calls, [
+    ["db.transaction"],
+    ["tx.executeAsync", "INSERT INTO users VALUES (?)", [7]],
+    ["tx.executeAsync", "SELECT id FROM users", []],
+  ]);
+});
+
+test("createQuickSqliteExecutor serializes concurrent transactions per executor", async () => {
+  const calls = [];
+  let releaseFirstTransaction;
+  let secondTransactionStarted = false;
+
+  const waitForFirstTransaction = new Promise((resolve) => {
+    releaseFirstTransaction = resolve;
+  });
+
+  const executor = createQuickSqliteExecutor({
+    async executeAsync(sql, params) {
+      calls.push(["db.executeAsync", sql, params]);
+      return { rows: { _array: [] } };
+    },
+    async transaction(callback) {
+      const txId = calls.filter(([type]) => type === "db.transaction").length + 1;
+      calls.push(["db.transaction", txId]);
+
+      return callback({
+        async executeAsync(sql, params) {
+          calls.push([`tx${txId}.executeAsync`, sql, params]);
+          return { rows: { _array: [{ id: txId }] } };
+        },
+      });
+    },
+  });
+
+  const first = executor.withTransaction(async () => {
+    await executor.execute({ sql: "A1", params: [] });
+    await waitForFirstTransaction;
+    await executor.execute({ sql: "A2", params: [] });
+  });
+
+  const second = executor.withTransaction(async () => {
+    secondTransactionStarted = true;
+    await executor.execute({ sql: "B1", params: [] });
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(secondTransactionStarted, false);
+
+  releaseFirstTransaction();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(calls, [
+    ["db.transaction", 1],
+    ["tx1.executeAsync", "A1", []],
+    ["tx1.executeAsync", "A2", []],
+    ["db.transaction", 2],
+    ["tx2.executeAsync", "B1", []],
+  ]);
+});
+
+test("createQuickSqliteExecutor reuses the active transaction for nested withTransaction calls", async () => {
+  const calls = [];
+  const executor = createQuickSqliteExecutor({
+    async executeAsync(sql, params) {
+      calls.push(["db.executeAsync", sql, params]);
+      return { rows: { _array: [] } };
+    },
+    async transaction(callback) {
+      calls.push(["db.transaction"]);
+      return callback({
+        async executeAsync(sql, params) {
+          calls.push(["tx.executeAsync", sql, params]);
+          return { rows: { _array: [] } };
+        },
+      });
+    },
+  });
+
+  await executor.withTransaction(async () => {
+    await executor.execute({ sql: "outer", params: [] });
+    await executor.withTransaction(async () => {
+      await executor.execute({ sql: "inner", params: [] });
+    });
+  });
+
+  assert.deepEqual(calls, [
+    ["db.transaction"],
+    ["tx.executeAsync", "outer", []],
+    ["tx.executeAsync", "inner", []],
+  ]);
 });

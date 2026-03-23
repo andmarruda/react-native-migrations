@@ -154,6 +154,14 @@ function readOption(options: Record<string, string | boolean>, key: string) {
   return typeof value === "string" ? value : undefined;
 }
 
+function assertTimestampFormat(timestamp: string) {
+  if (!/^\d{14}$/.test(timestamp)) {
+    throw new CliError(
+      `Invalid timestamp "${timestamp}". Use the format yyyymmddHHMMSS.`,
+    );
+  }
+}
+
 export function createMigration(input: {
   cwd: string;
   name?: string;
@@ -170,6 +178,8 @@ export function createMigration(input: {
   const directory = resolveDirectory(input.cwd, readOption(input.options, "dir"));
   const timestamp = readOption(input.options, "timestamp") || toTimestamp();
   const slug = toMigrationSlug(input.name);
+
+  assertTimestampFormat(timestamp);
 
   if (!slug) {
     throw new CliError(
@@ -221,15 +231,6 @@ export function validateMigrations(input: {
     if (!group.up) {
       errors.push(`Migration "${baseName}" is missing an .up.sql file.`);
     }
-
-    if (!group.down) {
-      errors.push(`Migration "${baseName}" is missing a .down.sql file.`);
-    }
-  }
-
-  const sortedFiles = [...files].sort((left, right) => left.localeCompare(right));
-  if (files.join("|") !== sortedFiles.join("|")) {
-    errors.push("Migration files are not ordered lexicographically.");
   }
 
   if (errors.length > 0) {

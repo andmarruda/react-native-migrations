@@ -109,6 +109,11 @@ function readOption(options, key) {
     const value = options[key];
     return typeof value === "string" ? value : undefined;
 }
+function assertTimestampFormat(timestamp) {
+    if (!/^\d{14}$/.test(timestamp)) {
+        throw new CliError(`Invalid timestamp "${timestamp}". Use the format yyyymmddHHMMSS.`);
+    }
+}
 function createMigration(input) {
     if (!input.name) {
         throw new CliError("Please provide a migration name. Example: rn-sqlite-migrations create split_full_name");
@@ -116,6 +121,7 @@ function createMigration(input) {
     const directory = resolveDirectory(input.cwd, readOption(input.options, "dir"));
     const timestamp = readOption(input.options, "timestamp") || toTimestamp();
     const slug = toMigrationSlug(input.name);
+    assertTimestampFormat(timestamp);
     if (!slug) {
         throw new CliError("The migration name produced an empty slug. Use letters or numbers in the name.");
     }
@@ -146,13 +152,6 @@ function validateMigrations(input) {
         if (!group.up) {
             errors.push(`Migration "${baseName}" is missing an .up.sql file.`);
         }
-        if (!group.down) {
-            errors.push(`Migration "${baseName}" is missing a .down.sql file.`);
-        }
-    }
-    const sortedFiles = [...files].sort((left, right) => left.localeCompare(right));
-    if (files.join("|") !== sortedFiles.join("|")) {
-        errors.push("Migration files are not ordered lexicographically.");
     }
     if (errors.length > 0) {
         throw new CliError(errors.join("\n"));

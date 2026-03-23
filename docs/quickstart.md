@@ -23,6 +23,8 @@ You can generate them with the CLI:
 rn-sqlite-migrations create create_users --dir src/database/migrations
 ```
 
+If you provide a custom timestamp, it must use the format `yyyymmddHHMMSS`.
+
 ## 2. Build a SQLite Executor Adapter
 
 Your app owns the actual SQLite driver. The package only needs an adapter with:
@@ -131,4 +133,10 @@ If you need to inspect rollback safety for the latest applied batch:
 
 ```ts
 const rollbackPlan = await runner.planRollbackLastBatch();
+```
+
+For release checks in this package itself, you can also run:
+
+```bash
+npm run pack:check
 ```
