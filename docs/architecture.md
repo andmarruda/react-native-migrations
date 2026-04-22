@@ -43,10 +43,15 @@ It re-exports:
 
 - the migration catalog builder
 - the migration runner
+- the React Native SQLite adapters
+- the SQL loaders
 - the SQL splitting helper
 - all public TypeScript types
 
 This file defines what consumers import from the package.
+
+Node-only CLI helpers are exported from the separate `./cli` subpath so React Native
+bundlers do not traverse `node:fs` and other CLI dependencies from the app runtime.
 
 ### `src/types.ts`
 

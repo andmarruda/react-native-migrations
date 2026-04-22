@@ -5,7 +5,6 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
-  CliError,
   createAssetSqlLoader,
   createExpoSqliteExecutor,
   createQuickSqliteExecutor,
@@ -18,6 +17,7 @@ const {
 } = require("../dist/index.js");
 const packageExports = require("../dist/index.js");
 const {
+  CliError,
   createMigration,
   generateManifest,
   groupMigrationFiles,
@@ -332,20 +332,36 @@ test("createMigration rejects invalid custom timestamps", () => {
 
 test("index exports expose the public API surface", () => {
   assert.equal(typeof packageExports.defineMigrations, "function");
-  assert.equal(typeof packageExports.CliError, "function");
-  assert.equal(typeof packageExports.createMigration, "function");
-  assert.equal(typeof packageExports.generateManifest, "function");
-  assert.equal(typeof packageExports.groupMigrationFiles, "function");
-  assert.equal(typeof packageExports.parseArgs, "function");
-  assert.equal(typeof packageExports.printHelp, "function");
-  assert.equal(typeof packageExports.resolveDirectory, "function");
-  assert.equal(typeof packageExports.runCli, "function");
-  assert.equal(typeof packageExports.toMigrationSlug, "function");
-  assert.equal(typeof packageExports.toTimestamp, "function");
-  assert.equal(typeof packageExports.validateMigrations, "function");
+  assert.equal(packageExports.CliError, undefined);
+  assert.equal(packageExports.createMigration, undefined);
+  assert.equal(packageExports.generateManifest, undefined);
+  assert.equal(packageExports.groupMigrationFiles, undefined);
+  assert.equal(packageExports.parseArgs, undefined);
+  assert.equal(packageExports.printHelp, undefined);
+  assert.equal(packageExports.resolveDirectory, undefined);
+  assert.equal(packageExports.runCli, undefined);
+  assert.equal(packageExports.toMigrationSlug, undefined);
+  assert.equal(packageExports.toTimestamp, undefined);
+  assert.equal(packageExports.validateMigrations, undefined);
   assert.equal(typeof packageExports.MigrationRunner, "function");
   assert.equal(typeof packageExports.splitSqlStatements, "function");
   assert.equal(typeof packageExports.MigrationError, "function");
+});
+
+test("CLI helpers stay on the CLI entry point", () => {
+  const cliExports = require("../dist/cli.js");
+
+  assert.equal(typeof cliExports.CliError, "function");
+  assert.equal(typeof cliExports.createMigration, "function");
+  assert.equal(typeof cliExports.generateManifest, "function");
+  assert.equal(typeof cliExports.groupMigrationFiles, "function");
+  assert.equal(typeof cliExports.parseArgs, "function");
+  assert.equal(typeof cliExports.printHelp, "function");
+  assert.equal(typeof cliExports.resolveDirectory, "function");
+  assert.equal(typeof cliExports.runCli, "function");
+  assert.equal(typeof cliExports.toMigrationSlug, "function");
+  assert.equal(typeof cliExports.toTimestamp, "function");
+  assert.equal(typeof cliExports.validateMigrations, "function");
 });
 
 test("CLI helpers print help and group migration files", () => {

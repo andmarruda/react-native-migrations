@@ -1,6 +1,6 @@
 {
   "name": "@andmarruda/react-native-sqlite-migrations",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Laravel-style SQLite migrations for React Native with pre-destructive data migration hooks.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
